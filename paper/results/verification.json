@@ -1,0 +1,7 @@
+{
+  "prefix_causality": "pass",
+  "angle_2pi_invariance": "pass",
+  "gap_finite_outputs_under_100s": "pass",
+  "python": "3.14.2",
+  "numpy": "2.4.3"
+}

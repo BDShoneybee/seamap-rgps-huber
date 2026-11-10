@@ -1,0 +1,340 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage{amsmath,amssymb,graphicx}
+\usepackage{lineno}
+\usepackage[hidelinks]{hyperref}
+\setlength{\textwidth}{160mm}
+\setlength{\textheight}{238mm}
+\setlength{\oddsidemargin}{0mm}
+\setlength{\topmargin}{-10mm}
+\setlength{\parindent}{1.5em}
+\setlength{\emergencystretch}{2em}
+\renewcommand{\baselinestretch}{2}
+\makeatletter
+\renewcommand\@cite[2]{(#1\if@tempswa , #2\fi)}
+\renewcommand\@biblabel[1]{}
+\makeatother
+\newcommand{\MAD}{\operatorname{MAD}}
+\newcommand{\med}{\operatorname{median}}
+\newcommand{\wrap}{\operatorname{wrap}}
+\newcommand{\fig}[3]{\begin{figure}[htbp]\centering\includegraphics[width=\linewidth]{figures/#1.pdf}\caption{\textbf{#2} #3}\label{fig:#1}\end{figure}}
+\title{Causal robust trend preprocessing of marine relative-GPS range and bearing: reproducible evidence and operational limits}
+\ifdefined\BlindReview
+\author{}
+\else
+\author{Menghui Fan$^{1,2}$, Shouchuan Fang$^{1,*}$, Fujiang Liu$^3$\\[0.5em]
+\small $^1$BGP Offshore, BGP Inc., CNPC, China\\
+\small $^2$College for Elite Engineers, China University of Geosciences, Wuhan, China\\
+\small $^3$School of Geography and Information Engineering,\\
+\small China University of Geosciences, Wuhan, China\\
+\small $^*$Correspondence: \texttt{fangshouchuan@cnpc.com.cn}}
+\fi
+\date{}
+\begin{document}
+\maketitle
+\vspace{-2em}
+\linenumbers
+\begin{abstract}
+Marine relative-GPS observations can exhibit alternating fluctuations, isolated gross errors and data gaps before entering a navigation estimator. We examine a causal, constant-state trend preprocessor that combines damped slope prediction, an alternation-dependent gain, a hard innovation gate and Huber weighting. A source-code audit distinguishes the deployed scalar core from related implementations and from a circular-residual extension. Reproducible assessment comprises six scalar scenarios with 60 Monte Carlo runs each, 60 polar-to-Cartesian experiments, step and circular-boundary stress tests, and chronological replay of ship-collected Seamap observations. In the isolated-outlier scenario, mean normalized root-mean-square error decreases from 2.867 for raw observations to 0.372 for the trend method; a specified Huber-weighted Kalman comparator obtains 0.597. Under combined disturbances, corresponding errors are 3.155, 0.642 and 0.836. However, removing the hard gate improves the combined result to 0.590, and the trend method is less accurate than the Kalman comparator in the synthetic horizontal-position experiment. Each real channel contains 8830 archive epochs and 6741 observed values. Range next-observation disagreement decreases slightly, whereas bearing disagreement increases from 0.00545 to 0.01036 rad despite reduced output roughness. No independent reference trajectory is available; these real-data diagnostics do not establish absolute positioning accuracy. The results support trend preprocessing for slowly varying, contaminated observations while identifying maneuver lag, scale contamination and angular-boundary handling as practical deployment constraints.
+\end{abstract}
+\noindent\textbf{Keywords:} relative GPS; marine navigation; robust preprocessing; Huber weighting; causal filtering; range and bearing; reproducible evaluation
+
+\section{Introduction}
+Marine seismic acquisition requires consistent positions for towed equipment as well as for the survey vessel. Relative global positioning system (RGPS) equipment provides a means of tracking remote modules with respect to a vessel reference. Seamap's BuoyLink product family applies global navigation satellite system (GNSS) technology to gunfloat and tailbuoy positioning \cite{seamap}. In a navigation processing chain, derived relative range and bearing can be supplied to a downstream estimator. Disturbances at this interface can affect not only instantaneous relative positions but also velocities computed from successive positions. The present study concerns this derived-observation interface rather than receiver-level tracking or carrier-phase ambiguity resolution.
+
+Recursive estimation provides a systematic framework for combining a dynamic model with measurements \cite{kalman}. Its effectiveness depends on whether the assumed observation and process models represent the data adequately. Occasional extreme residuals can substantially perturb a conventional quadratic-loss update. Huber's approach limits residual influence while retaining a quadratic central region \cite{huber}. Robust navigation estimation has consequently developed along several directions. Huber weighting has been incorporated into cubature Kalman filtering for GPS processing \cite{tseng}. Distributionally robust tracking distinguishes between outliers that propagate through the system dynamics and those that affect only observations \cite{ruckdeschel}. Maximum-correntropy filtering uses an alternative nonlinear criterion for heavy-tailed disturbances \cite{chen}. Robust real-time kinematic positioning has also been evaluated with simulated and vessel-collected data, including several score functions and variational approaches \cite{medina}. These studies establish that robust estimation is an existing field; combining a gate with Huber weighting alone is not a new estimation principle.
+
+A separate engineering problem arises when a legacy navigation system accepts only a scalar relative observation and a quality field. A lightweight preprocessor can be integrated at this boundary without replacing the complete navigation filter. Such a preprocessor may require only a trend, a slope and an innovation scale, with explicit handling of unavailable data. Alternating fluctuations motivate reducing the observation gain when consecutive increments change sign. Nevertheless, this heuristic can also reduce responsiveness to real motion. Similarly, a hard gate can reject both gross errors and legitimate changes. Quantifying this tradeoff is necessary before interpreting smooth output as improved navigation.
+
+The retained project archive contains C++ preprocessing classes, PowerShell trend filters, diagnostic workbooks, aligned range/bearing series and mixed event logs. The implementations are related but not identical. Initialization may use the beginning or end of a buffer; angular residuals may be scalar or circular; and missing-data behavior differs between interfaces. A scientifically useful description must resolve these differences before assigning a single algorithm name to the available results. In particular, parameters estimated from a complete record cannot support a strict online claim unless calibration is separated from evaluation.
+
+We therefore formulate and assess the existing trend core as an explicitly specified causal algorithm. The contributions are an equation-level reconstruction and implementation audit; a reproducible comparison with conventional and robust recursive baselines, including component ablations; and a ship-data evaluation that separates observable continuity diagnostics from unavailable truth-based accuracy. Polar geometry, missing-data queries, circular boundaries and abrupt changes are analyzed explicitly. The intended outcome is an operationally bounded account of what the preprocessor achieves and where its assumptions fail, rather than a claim of universal superiority over navigation filters.
+
+Recent work also emphasizes that the Huber threshold and residual scale should reflect the assumed error distribution. For example, a 2026 preprint derives logistic-statistics-based scale and threshold choices for GNSS positioning \cite{li}. The present engineering coefficients are retained from the implementation rather than assigned that statistical interpretation. This distinction is central when a downstream filter consumes a preprocessor's quality output.
+
+\section{Observation model and navigation implications}
+\subsection{Range, bearing and timing}
+Let $z_k$ denote either relative range in metres or bearing in radians at epoch $t_k$. A scalar observation model is
+\begin{equation}
+ z_k=q(t_k)+\epsilon_k+o_k,
+ \label{eq:obs}
+\end{equation}
+where $q$ is the underlying relative observable, $\epsilon_k$ represents ordinary measurement disturbance and $o_k$ represents occasional contamination. An unavailable observation is represented separately, rather than assigned a numerical zero. The increment $\Delta t_k=t_k-t_{k-1}$ is computed in seconds. Within a confirmed daily time stream, midnight rollover may be corrected by adding 86400 s to a sufficiently large negative jump. The published range archive stores hours, minutes and seconds, whereas its bearing counterpart stores minutes and seconds; bearing hour transitions are consequently unwrapped before chronological replay. This recovers elapsed time but does not establish the absolute hour of the bearing series.
+
+For the local convention that bearing is clockwise from north, relative east and north components satisfy
+\begin{equation}
+ \mathbf p_k=\begin{bmatrix}E_k\\N_k\end{bmatrix}
+ =\begin{bmatrix}\rho_k\sin\theta_k\\\rho_k\cos\theta_k\end{bmatrix},\quad
+ J_k=\begin{bmatrix}\sin\theta_k&\rho_k\cos\theta_k\\
+ \cos\theta_k&-\rho_k\sin\theta_k\end{bmatrix}.
+ \label{eq:geometry}
+\end{equation}
+This convention is prescribed for the geometric analysis; the archived device-to-vessel axis transformation is unavailable. A different fixed angular origin rotates the local components without changing the Euclidean error norm. Linearized position covariance is $C_{p,k}\simeq J_k C_{\rho\theta,k}J_k^T$. Since the columns of $J_k$ are orthogonal,
+\begin{equation}
+ \operatorname{tr}(C_{p,k})\simeq \sigma_{\rho,k}^2+
+ \rho_k^2\sigma_{\theta,k}^2.
+ \label{eq:trace}
+\end{equation}
+Thus, at a 100 m separation, a 0.01 rad bearing perturbation corresponds approximately to a 1 m transverse perturbation. This is a geometric example, not a measured device specification.
+
+For finite-difference velocity $\hat{\mathbf v}_k=(\hat{\mathbf p}_k-\hat{\mathbf p}_{k-1})/\Delta t_k$, the error covariance contains temporal correlations:
+\begin{equation}
+ C_{v,k}=\frac{C_{p,k}+C_{p,k-1}-C_{k,k-1}-C_{k,k-1}^T}{\Delta t_k^2}.
+ \label{eq:velocity}
+\end{equation}
+Equation~\eqref{eq:velocity} explains why reducing isolated position jumps can improve velocity continuity, but also why a temporally correlated smoothing error cannot be assessed from marginal position variance alone. The present experiments do not claim a truth-based vessel-velocity improvement.
+
+\subsection{Circular observations}
+The appropriate angular residual is
+\begin{equation}
+ \wrap(\alpha)=((\alpha+\pi)\bmod 2\pi)-\pi,\qquad
+ \nu_k=\wrap(z_k-x_k^-).
+ \label{eq:wrap}
+\end{equation}
+The deployed scalar core instead subtracts observation values directly; its optional buffer angle-correction calls are commented out. Circular residuals are therefore evaluated as a clearly identified extension. In the main scalar and ship replay comparisons, the archived continuous bearing branch is retained. The controlled boundary test compares scalar subtraction and ring subtraction on the same wrapped observations. Neither approach reconstructs an arbitrary number of unobserved revolutions during a long outage.
+
+\section{Causal robust trend preprocessing}
+\subsection{Scope and initialization}
+The reconstructed core follows the Huber state updates in the project class \texttt{DLPPreProc}. The experimental implementation isolates these updates from the surrounding Qt/Eigen-dependent polynomial-buffer interface. It is not a reproduction of the complete deployed navigation solution. The state consists of trend $x_k$, slope $v_k$, residual scale $s_k$, alternation score $a_k$ and a small number of previous-observation variables. Here $v_k$ is the rate of change of an observable; for bearing its unit is rad/s, and it is not vessel speed.
+
+Six available observations initialize the experimental core. Before initialization, current observations are passed through and no retrospective estimates are substituted. For initialization samples $(t_i,z_i)$, define $d_i=z_i-z_{i-1}$, using circular differences only for the extension. Then
+\begin{align}
+ s_0&=\max\{0.35\times1.4826\,\MAD(d_i),10^{-4}\},\\
+ v_0&=\med\{d_i/(t_i-t_{i-1})\},\qquad x_0=z_{\mathrm{last}},
+ \label{eq:init}
+\end{align}
+with $\MAD(d)=\med|d-\med(d)|$. The state epoch is the last initialization epoch. This choice matches the latest-buffer anchoring of the deployed Huber core. The standalone related class anchors its internal trend to the first buffer observation while advancing its time to the last; that discrepancy is excluded from this controlled reconstruction. The production core also includes an equipment-accuracy-based scale floor; this additional floor is not inferred because the corresponding configuration is not available. The dimensionless simulation uses the explicit floor in Eq.~\eqref{eq:init}.
+
+\subsection{Damped prediction and alternation adaptation}
+For a valid increasing timestamp, the experimental increment is bounded below by $10^{-3}$ s. The prediction is
+\begin{equation}
+ v_k^-=v_{k-1}\exp(-\Delta t_k/\tau_v),\qquad
+ x_k^-=x_{k-1}+v_k^-\Delta t_k,
+ \label{eq:predict}
+\end{equation}
+where $\tau_v=12$ s. This is the discrete formula in the source, not the exact integral of an exponentially decaying continuous velocity. The exact integrated displacement would be $v_{k-1}\tau_v(1-e^{-\Delta t_k/\tau_v})$. These expressions differ when sampling is coarse, so Eq.~\eqref{eq:predict} is retained without claiming a continuous-time exact discretization.
+
+For an available observation, form $\nu_k=z_k-x_k^-$ and increment $d_k=z_k-z_{\mathrm{prev}}$. Once two successive increments exist,
+\begin{equation}
+ a_k=\begin{cases}
+ \min(1,0.88a_{k-1}+0.12),&d_kd_{\mathrm{prev}}<0,\\
+ \max(0,0.90a_{k-1}-0.06),&\text{otherwise}.
+ \end{cases}
+ \label{eq:alt}
+\end{equation}
+The gain components are
+\begin{align}
+ K_{x,k}&=(1-e^{-\Delta t_k/\tau_x})(1-0.45a_k),\\
+ K_{v,k}&=\frac{1-e^{-\Delta t_k/\tau_u}}{\Delta t_k}(1-0.60a_k),
+ \label{eq:gains}
+\end{align}
+with $\tau_x=10$ s and $\tau_u=24$ s. The coefficients are inherited engineering settings, not estimates of a Kalman covariance. The gain on $v$ has unit s$^{-1}$, ensuring that $K_v\nu$ has the slope unit. More frequent alternating increments decrease both gains, with stronger reduction in the slope update. Figure~\ref{fig:flowchart} summarizes the processing sequence.
+
+\fig{flowchart}{Causal preprocessing flow.}{The state is initialized from available historical observations. Missing observations use a query relative to the latest state. Available observations update the scale even when rejected by the gate. The chart describes the experimental scalar core and deployed-style query, not every branch of the original polynomial wrapper.}
+
+\subsection{Hard rejection, Huber weighting and scale update}
+With $\gamma=4$ and $\kappa=2.5$, define the effective correction
+\begin{equation}
+ c_k=\begin{cases}
+ 0,&|\nu_k|>\gamma s_{k-1},\\
+ \nu_k\min\{1,\kappa s_{k-1}/\max(|\nu_k|,\varepsilon)\},
+ &|\nu_k|\le\gamma s_{k-1},
+ \end{cases}
+ \label{eq:correction}
+\end{equation}
+where $\varepsilon$ prevents division by zero. The state update is
+\begin{equation}
+ x_k=x_k^-+K_{x,k}c_k,\qquad
+ v_k=v_k^-+K_{v,k}c_k.
+ \label{eq:update}
+\end{equation}
+The hard gate uses the previous scale, not the scale after the current innovation. Independently of acceptance,
+\begin{equation}
+ s_k=\max\{0.97s_{k-1}+0.03|\nu_k|,0.35s_0\}.
+ \label{eq:scale}
+\end{equation}
+The latest raw observation and increment are retained even after rejection, as in the source. Rejection therefore suppresses the current state correction but does not isolate the scale or alternation statistics from a contaminated sample.
+
+Huber weighting corresponds to the score of
+\begin{equation}
+ \rho_\kappa(u)=\begin{cases}u^2/2,&|u|\le\kappa,\\
+ \kappa|u|-\kappa^2/2,&|u|>\kappa.
+ \end{cases}
+ \label{eq:huberloss}
+\end{equation}
+Equation~\eqref{eq:update} is a single weighted recursive correction, not an iteratively solved maximum-likelihood estimator. Furthermore, the gate makes the effective score drop discontinuously to zero beyond $\gamma$, so the combined rule is not simply the derivative of the convex Huber loss. For fixed historical scale, the accepted correction obeys
+\begin{equation}
+ |x_k-x_k^-|\le K_{x,k}\kappa s_{k-1},\qquad
+ |v_k-v_k^-|\le K_{v,k}\kappa s_{k-1}.
+ \label{eq:bound}
+\end{equation}
+This is a conditional single-step bound, not a global robustness guarantee: Eq.~\eqref{eq:scale} can enlarge future scales in response to arbitrarily large residuals. Likewise, the exponentially weighted absolute innovation is an empirical residual magnitude, not a calibrated standard deviation. Even for Gaussian residuals, mean absolute deviation differs from standard deviation. The labels ``four-scale gate'' and ``quality'' should therefore not be interpreted as Gaussian false-alarm probabilities or validated integrity bounds.
+
+\subsection{Missing-data queries and causal properties}
+At a missing archive epoch, the experimental implementation queries the state at elapsed time $h$ since the most recent available observation. It returns the damped extrapolation for $h\le8$ s, freezes at the latest trend for $8<h\le100$ s, and returns unavailable for $h>100$ s. Missing queries do not mutate the state. This reproduces the structure of the deployed prediction interface, with exact zero-lag output in the controlled harness. The production interface additionally forces its prediction interval to at least its configured minimum step and applies an absolute value to negative query intervals; these behaviors are not used in chronological experiments. The standalone trend class instead performs state-mutating missing updates and gradual velocity freezing. These two gap rules must not be mixed when interpreting results.
+
+After warmup, all updates use only current and previous observations. A prefix test verifies that modifying every sample after epoch 399 leaves the first 400 estimates unchanged. Ring-residual invariance under addition of $2\pi$ is also tested. These finite tests supplement, but do not replace, the direct causal dependence apparent in Eqs.~\eqref{eq:init}--\eqref{eq:scale}. Per-update arithmetic and streaming state storage are constant. Initialization requires a fixed six-sample buffer. The original application stores additional buffers and display histories, so its full memory requirement is not represented by the isolated core.
+
+\section{Experimental design}
+\subsection{Evidence provenance and reproducibility}
+The authors identify the observation source as ship-collected Seamap RGPS equipment, commonly termed a mushroom-head remote unit. The precise product generation, firmware, antenna installation, sea state and independently calibrated range/bearing accuracy are not recorded in the supplied material. Although some archive directory labels refer to indoor experiments, the authors confirm ship acquisition; the retained files do not independently establish whether each diagnostic run was live processing or later replay of ship observations. We use these logs for implementation evidence and the aligned observation series for ship-data replay. No geographic position, instrument specification or independent truth trajectory is invented.
+
+Two aligned files each contain 8830 epochs. Each channel contains 6741 available input values and 2089 missing values, giving a 23.66\% missing fraction. Their elapsed durations are approximately 8829.2 s and the median sample interval is 1 s. The duplicated archive row count is not treated as two independent campaigns. The bearing absolute hour cannot be recovered from its shortened timestamp field, so the primary real-data results are channel-wise and do not claim synchronized truth-based horizontal positioning.
+
+Available observations within the first 300 archive epochs define a fixed center $b=\med(z)$ and calibration scale $c=\max\{1.4826\MAD(\Delta z)/\sqrt{2},10^{-4}\}$. There are 233 available range observations and 232 available bearing observations in that segment. Replay uses normalized values $(z-b)/c$ and evaluates only archive indices at least 300. Calibration and evaluation are therefore disjoint. The resulting scales are 0.10793 m and 0.004403 rad. They are normalization choices based on early differences, not manufacturer accuracy estimates. The factor $\sqrt{2}$ is motivated by independent equal-variance errors; temporal correlation and differences across missing epochs can invalidate that noise interpretation. No test-segment observations determine calibration or filter parameters. Figure~\ref{fig:archive_diagnostics} summarizes availability and missing-run lengths.
+
+\fig{archive_diagnostics}{Ship-archive availability and missing runs.}{Left: availability at each retained epoch, with the first 300 archive epochs marked as calibration. Right: consecutive missing-run lengths. Each channel contains 388 missing runs; the longest retained run is 18 epochs. Calibration uses only available values before evaluation index 300.}
+
+Full logs from two March 9 diagnostic runs and one March 26 run are parsed without also treating their filtered extracts as new data. State-update equations are checked on 9840 accepted log events by combining the logged predicted state, innovation, gains and weight. Maximum absolute discrepancies are below $10^{-4}$ for trend and $10^{-7}$ for slope, consistent with limited printed precision. This check verifies the algebra of reported accepted updates; it does not prove complete binary equivalence of the replay harness and every production branch. Machine-readable trial results, extracted inputs and source hashes accompany the study.
+
+\subsection{Scalar simulation protocol}
+The scalar truth is prescribed in normalized units as
+\begin{equation}
+ q(t)=100+2\sin(2\pi t/300)+0.002t,\quad t=0,\ldots,599~\mathrm{s}.
+ \label{eq:truth}
+\end{equation}
+Independent standard normal noise is added. Six cases are evaluated: Gaussian only; alternating disturbance $1.5(-1)^k$; isolated contamination with probability 0.05 and randomly signed amplitude 12; gaps over $[180,190)$ and $[390,420)$ s; the combination of alternation, contamination and gaps; and a maneuver term $0.10(t-260)_+-0.10(t-340)_+$. Here $(u)_+=\max(u,0)$. Contamination is disabled before 30 s; warmup contains ordinary noise and, where specified, alternating disturbance. All reported scalar errors use epochs $t\ge30$ s, including gap epochs when output is available. Sixty independent seeds, beginning at 81000, are used in each case. Methods receive identical data for a given seed and case.
+
+Comparators are raw observations with last-value hold during gaps, a causal median over the latest seven available observations, a two-state constant-velocity Kalman filter (CV-KF), and a specified one-pass Huber-weighted Kalman filter (Huber-KF). The latter is a simple robust comparator, not a reproduction of the cubature method of Tseng et al. The KF state is $[q,\dot q]^T$, with
+\begin{equation}
+ F_k=\begin{bmatrix}1&\Delta t_k\\0&1\end{bmatrix},\quad
+ Q_k=0.0025\begin{bmatrix}\Delta t_k^3/3&\Delta t_k^2/2\\
+ \Delta t_k^2/2&\Delta t_k\end{bmatrix},\quad R=1.
+ \label{eq:kf}
+\end{equation}
+The initial slope is zero and covariance is $10I$. Huber-KF computes
+\begin{equation}
+ w_k=\min\{1,2.5\sqrt{P^-_{11}+1}/\max(|\nu_k|,\varepsilon)\}
+\end{equation}
+and replaces $R$ by $1/w_k$ before the ordinary measurement update, using the Joseph covariance form. Missing epochs perform prediction only. These fixed settings provide transparent benchmarks rather than claims of optimally tuned competitors. All methods use the same normalization in real replay.
+
+Two matched trend ablations remove alternation-dependent gain modulation or remove the hard gate, while retaining the other components. Primary statistics are run-level root-mean-square error (RMSE), mean absolute error and the 95th percentile of absolute error. For errors $e_k$, $\mathrm{RMSE}=\sqrt{|\mathcal I|^{-1}\sum_{k\in\mathcal I}e_k^2}$. Confidence intervals for mean RMSE use $2.001$ times the standard error across 60 independent runs. Paired RMSE differences use 3000 run-level bootstrap resamples; individual time samples are not treated as independent replicates. These intervals are descriptive and unadjusted for multiple comparisons.
+
+Sensitivity uses trend time constants of 2, 5, 10 and 20 s. Contamination probabilities are 0, 0.02, 0.05, 0.10 and 0.20, with 20 new seeds per setting. The combined disturbance structure is otherwise unchanged. This is a sensitivity experiment, not a retrospective selection of the reported default.
+
+\subsection{Geometric, boundary and step experiments}
+An independent polar simulation prescribes
+\begin{align}
+ \rho(t)&=100+3\sin(2\pi t/300)~\mathrm{m},\\
+ \theta(t)&=3+0.0006t+0.01\sin(2\pi t/200)~\mathrm{rad},
+\end{align}
+with noise standard deviations 0.2 m and 0.003 rad. Each channel independently receives 5\% contamination of magnitude twelve times its noise standard deviation after warmup. Sixty seeds begin at 150000. Each channel is normalized by its prescribed noise standard deviation before filtering and converted back before Eq.~\eqref{eq:geometry}. This experiment uses a continuous angular branch. A separate test wraps the same bearing to $[-\pi,\pi)$ and compares scalar and circular residuals.
+
+A distinct step test uses truth $100+8\,\mathbf1_{t\ge300}$ and unit Gaussian noise with 30 seeds beginning at 160000. We report first entry within 0.8 units of the new truth after the step. This diagnostic is not a sustained settling-time guarantee. The step is deliberately a model-mismatch stressor, rather than a model of ordinary vessel motion.
+
+\subsection{Ship-data replay without independent truth}
+Two real-data diagnostics can be computed without a reference trajectory. Output roughness is the median absolute consecutive output increment after calibration. Next-observation disagreement compares the current filtered output with the next available recorded value, restricted to adjacent observed epochs with positive time increment below 2 s. It is evaluated in the original channel units. This measure combines prediction mismatch with measurement disturbance and is not an estimate of physical truth error. Serially correlated disturbances may reward an estimator that follows them.
+
+For controlled contamination, thirty seeds beginning at 130000 inject randomly signed twelve-scale offsets at 2\% of available evaluation observations. Each method is rerun on the modified sequence. The paired output divergence is
+\begin{equation}
+ D_m=\sqrt{\frac{1}{|\mathcal J|}\sum_{k\in\mathcal J}
+  (\hat q_{m,k}^{\mathrm{injected}}-\hat q_{m,k}^{\mathrm{original}})^2}/c,
+ \label{eq:divergence}
+\end{equation}
+where $\mathcal J$ contains post-calibration epochs with finite paired outputs. This measures sensitivity to the added contamination. The unmodified ship record remains noisy and is not promoted to truth. Native anomaly-detection precision and recall are therefore reported only in the labeled synthetic outlier case.
+
+\section{Results}
+\subsection{Simulation accuracy and component effects}
+\input{sections/results_tables.tex}
+Table~\ref{tab:sim} and Fig.~\ref{fig:simulation_comparison} show the scalar comparison. The trend method reduces mean RMSE from 2.867 to 0.372 in the isolated-outlier case, compared with 0.597 for Huber-KF. Under Gaussian noise it reaches 0.366, and under combined disturbances it reaches 0.642. The latter is lower than 0.836 for Huber-KF, with a paired mean difference of $-0.194$ and a bootstrap 95\% interval of $[-0.297,-0.095]$. The improvement is conditional on the prescribed slow trend and noise model. Figure~\ref{fig:simulation_timeseries} illustrates both suppression of injected spikes and the response through missing intervals for the first predetermined seed.
+
+\fig{simulation_comparison}{Scalar Monte Carlo comparisons.}{Bars show mean RMSE across 60 runs; error bars show 95\% run-level intervals. Raw, Med, KF, HKF and Tr denote raw/hold, median-7, CV-KF, Huber-KF and trend. The last two bars remove alternation adaptation and hard gating, respectively. Values are normalized observation units.}
+\fig{simulation_timeseries}{Combined-disturbance time history.}{The displayed realization uses seed 81000, fixed before comparison. Gray bands mark the 10 s and 30 s missing intervals. The lower panel compares estimation errors against the prescribed synthetic truth, including gap epochs.}
+
+The alternation-only case does not support universal improvement: trend RMSE is 0.581, compared with 0.498 for Huber-KF. Removing the hard gate gives 0.401 in this case and 0.590 in the combined case, both lower than the corresponding complete trend results. Conversely, removing the gate worsens the isolated-outlier result from 0.372 to 0.453. Alternation adaptation improves several slow-trend cases but is not consistently beneficial: its removal changes the alternation-only mean to 0.571. The results indicate interactions between initialization scale, gating and gain suppression rather than independently additive benefits.
+
+Across the labeled isolated-outlier trials, the gate gives 1711 true detections, two false detections and two missed injected outliers. These counts correspond to approximately 99.88\% precision and recall for the specified large, isolated synthetic errors. They cannot be transferred to natural anomalies in the ship record, where labels and an independent reference are absent. Gap-specific errors, absolute-error percentiles and all seed-level outcomes are retained in the accompanying tables to permit evaluation beyond the aggregate RMSE.
+
+Figure~\ref{fig:sensitivity} shows that both the trend time constant and contamination frequency affect performance. The scale update includes rejected residuals; frequent contamination can therefore inflate the scale and weaken subsequent rejection. A low RMSE in one contamination regime does not establish resistance to an arbitrary burst or adversarial sequence.
+\fig{sensitivity}{Sensitivity to trend time constant and contamination.}{Each point averages 20 new realizations of the combined scenario. Only $\tau_x$ and the injected outlier probability vary. The default 10 s setting is retained in the principal comparison regardless of this plot.}
+
+\subsection{Horizontal geometry and abrupt-change limits}
+The independent polar simulation produces mean horizontal RMSEs of approximately 1.013 m for raw observations, 0.239 m for trend and 0.216 m for Huber-KF. Removing alternation adaptation yields 0.200 m. Thus, the favorable scalar result does not imply superiority after combining range and bearing with a moving relative trajectory. Bearing tracking lag and channel-specific dynamics matter. These metre-valued errors refer exclusively to known synthetic geometry and cannot be cited as achieved Seamap accuracy in the field.
+
+Figure~\ref{fig:geometry_and_wrap} includes a fixed-seed trajectory and a boundary stress test. Ordinary scalar subtraction interprets a circular wrap as a large jump. The ring-residual extension avoids that representation discontinuity. This extension preserves a single continuous circular error, but its implementation still requires explicit consideration of long outages and unusually fast angular motion.
+\fig{geometry_and_wrap}{Polar geometry and angular-boundary stress.}{Left: synthetic relative trajectory for seed 150000; the convention is east $=\rho\sin\theta$ and north $=\rho\cos\theta$. Right: circular error of two trend implementations on wrapped bearing observations. Ring residuals are an explicit extension; they are not silently attributed to the deployed scalar implementation.}
+
+The abrupt step further separates spike rejection from change tracking. The complete trend first enters the 10\% error band after a mean of 15.0 s, compared with 5.13 s for Huber-KF and 11.47 s after removing the hard gate. Figure~\ref{fig:step_response} shows a predetermined realization. A legitimate sustained change initially resembles an outlier to a low-scale gate. The later increase in scale permits reacquisition, but this process introduces lag. Automatic rejection flags therefore require interpretation in conjunction with system dynamics.
+\fig{step_response}{Response to a sustained abrupt change.}{The first of 30 fixed-seed stress realizations is shown. The truth changes by eight normalized units at 300 s. Reported entry times describe first arrival within 0.8 units of the new value, not a sustained settling-time criterion.}
+
+\subsection{Ship-data continuity and predictive disagreement}
+Table~\ref{tab:real} reports ship replay in the original units. Range next-observation RMSE changes from 0.2333 m for raw/hold to 0.2266 m for trend. Huber-KF obtains 0.2264 m. These small differences do not establish an absolute accuracy improvement. The trend reduces median range increments from 0.0971 to 0.0111 m, demonstrating substantial output smoothing.
+
+The bearing result is materially different. Next-observation disagreement increases from 0.00545 rad for raw/hold to 0.01036 rad for trend, while Huber-KF gives 0.00541 rad. At the same time, median bearing increments decrease from 0.00248 to 0.000809 rad. This is direct evidence that a smoother output can have greater disagreement with subsequent measurements. The channel-specific result is consistent with a trend time constant that is too restrictive for the observed bearing dynamics; the present study does not retune that constant on the evaluation segment.
+
+Figure~\ref{fig:archive_replay} shows the complete records and a fixed-index detail. It does not show a reference trajectory. Missing records are retained rather than filled from future observations. Figure~\ref{fig:archive_injection} quantifies additional-contamination sensitivity using paired reruns. Lower divergence indicates a smaller response to the injected perturbations, but an estimator that changes little can also lag real motion. Interpretation therefore requires the predictive-disagreement and step tests together.
+\fig{archive_replay}{Chronological ship-observation replay.}{Rows correspond to range and bearing. Left panels show the complete retained series; right panels show archive indices 1000--1249, selected independently of algorithm performance. The horizontal axis is elapsed channel time. Neither the observation nor a filtered output is an independent truth reference.}
+\fig{archive_injection}{Sensitivity to additional ship-record contamination.}{Bars show mean paired output divergence over thirty independent injection masks. Offsets affect 2\% of available evaluation inputs with magnitude twelve times the early calibration scale. Units are normalized by that scale. The reference rerun uses the unmodified but still noisy observations.}
+
+\subsection{Implementation cost and validation scope}
+On the present Python environment, the isolated trend routine processes an epoch in approximately 4.70 microseconds in a short constant-input timing exercise, versus 19.03 microseconds for Huber-KF. Five repeats of 1200 epochs are used. These figures are descriptive interpreter timings, not production C++ benchmarks; warmup, caching and machine load can affect them. The raw baseline timing includes only array copying and is not a full streaming acquisition cost. More relevant to implementation is that the trend method maintains a fixed-size state and performs no covariance-matrix factorization.
+
+The equation checks, prefix-causality test, circular-invariance test and generated figures pass the stated numerical conditions. A portable C++14 reconstruction also agrees with the Python scalar core to within $10^{-10}$ on three 600-epoch combined-disturbance sequences, with identical rejection decisions. This validates the two research implementations against each other, not the complete Qt/Eigen application. These checks do not validate receiver clock quality, navigation frame transformations, complete application reset behavior, or quality-field calibration. Those elements require an integrated-system test with configuration metadata and an independent trajectory reference.
+
+\section{Discussion}
+\subsection{What the method contributes in a marine processing chain}
+The preprocessor offers a straightforward integration point for legacy scalar observations. Its update is interpretable: slope damping limits extrapolation, alternation adaptation reduces response to high-frequency sign changes, and the hybrid influence rule limits a single accepted correction. The isolated-outlier and slow-trend results support this combination when the desired output is a slowly varying relative observable. Engineering simplicity is particularly relevant when the existing application already requests scalar predictions through a fixed interface.
+
+However, the actual deployment objective must be stated precisely. Suppressing visual oscillation, improving next-observation prediction, reducing horizontal position error and improving velocity estimation are distinct objectives. The ship bearing results separate the first two, and the synthetic polar results separate scalar estimation from horizontal geometry. A preprocessor should therefore expose its rejection and gap statuses alongside the numerical trend, allowing the downstream estimator to interpret delayed or unavailable inputs. Supplying only a smooth number and an uncalibrated squared scale can hide a loss of responsiveness.
+
+\subsection{Interpretation of the hybrid rule}
+The hard gate benefits isolated large contamination but can penalize alternating disturbance and sustained changes. A rejected innovation still updates the scale and previous raw increment. This behavior can accelerate reacquisition after a genuine shift, while also allowing large contamination to influence later thresholds. These competing effects explain why removing the gate does not have a uniformly positive or negative effect. The present results do not justify replacing the full method with an ablation solely because one aggregate case improves.
+
+An additional concern is circular geometry. Normalizing only the final output cannot correct a large erroneous innovation at a wrap boundary. Circular differencing must be applied consistently to innovations, increments and initialization slopes. The boundary experiment verifies this representation issue separately from filter tuning. Full polar-state filtering or a Cartesian navigation model could address channel coupling, but would be a different estimator and would require its own process and observation uncertainty design.
+
+\subsection{Evidence limitations and further validation}
+This study uses one aligned ship-observation pair and supporting diagnostic logs, not multiple independently documented sea campaigns. The absence of an external reference prevents absolute position, velocity or bearing accuracy claims. Device generation, installation geometry, absolute bearing time and sea conditions are incomplete. The diagnostic labels and author-confirmed acquisition provenance are reported together rather than reconciled through unsupported assumptions. The old archive predictions are retained for traceability but are not treated as an independent truth source or as a clean baseline.
+
+The simulations deliberately use explicit low-dimensional truths and fixed disturbance amplitudes. Real marine disturbances can be correlated, biased, burst-like or coupled across channels. The comparisons also use fixed baseline parameters; a broader calibration study might change the rankings. The step test exposes one failure mode but is not an exhaustive stability analysis. No global bound follows from the single-step correction bound because the scale recursion is not itself bounded against arbitrary contamination.
+
+A decisive operational validation would require an independently synchronized reference, documented antenna and lever-arm geometry, a known coordinate convention and configuration-controlled C++ replay. Additional sea conditions and independent records would permit evaluation of channel-specific tuning without information leakage. Until such evidence is available, the appropriate field conclusion is improved continuity with a measured tracking tradeoff, rather than demonstrated navigation accuracy or integrity.
+
+\section{Conclusions}
+An existing marine RGPS trend preprocessor has been reconstructed into explicit causal equations and evaluated with reproducible simulations and ship-data replay. Under isolated synthetic outliers, its mean scalar RMSE is 0.372 compared with 2.867 for raw observations and 0.597 for a specified Huber-weighted Kalman baseline. The combined-disturbance result also improves over those two comparators. Component ablations, circular-boundary tests, horizontal-position simulation and a step test show that the gains are conditional: gating can delay legitimate changes, alternation adaptation can penalize moving geometry, and scalar angular residuals fail at a circular wrap.
+
+The ship replay demonstrates smoother range and bearing outputs, but bearing next-observation disagreement approximately doubles with the default trend settings. Without an independent reference, these outcomes support a continuity assessment and an operational limitation, not an absolute accuracy claim. The main practical recommendation is to evaluate smoothness, prediction, geometry and reacquisition separately before placing a scalar robust trend preprocessor ahead of a navigation estimator.
+
+\section*{List of abbreviations}
+GNSS, global navigation satellite system; GPS, global positioning system; RGPS, relative GPS; CV-KF, constant-velocity Kalman filter; MAD, median absolute deviation; RMSE, root-mean-square error; RTK, real-time kinematic.
+
+\section*{Declarations}
+\subsection*{Availability of data and materials}
+\input{sections/data_availability.tex}
+\subsection*{Competing interests}
+The authors declare that they have no competing interests.
+\subsection*{Funding}
+\mbox{}
+\subsection*{Authors' contributions}
+\ifdefined\BlindReview
+Author contribution details are withheld in this review copy to preserve anonymity.
+\else
+Menghui Fan developed the algorithm and designed the experiments. Shouchuan Fang curated and organized the ship-collected data. Fujiang Liu reviewed and checked the methodology.
+\fi
+\subsection*{Acknowledgements}
+AI-assisted tools were used to assist code preparation, experimental analysis and manuscript drafting. The final content remains subject to author review and responsibility.
+
+\appendix
+\section{Fixed-gain local dynamics}
+For a locally constant time increment $\delta$, damping $d=e^{-\delta/\tau_v}$, alternation score and nonzero Huber weight $w$, let $b_x=wK_x$ and $b_v=wK_v$. Consider the homogeneous perturbation dynamics while the gate accepts observations. Combining prediction and correction gives
+\begin{equation}
+ A=\begin{bmatrix}1-b_x&(1-b_x)\delta d\\-b_v&d(1-b_v\delta)\end{bmatrix},\quad
+ \det A=d(1-b_x),\quad \operatorname{tr}A=1-b_x+d(1-b_v\delta).
+\end{equation}
+The scalar second-order discrete stability conditions are $1-\det A>0$, $1-\operatorname{tr}A+\det A>0$, and $1+\operatorname{tr}A+\det A>0$. Here $0<d<1$, $0<b_x<1$ and $0<b_v\delta<1$, giving
+\begin{align}
+ 1-\operatorname{tr}A+\det A&=b_x(1-d)+db_v\delta>0,\\
+ 1+\operatorname{tr}A+\det A&=(1+d)(2-b_x)-db_v\delta>0.
+\end{align}
+Thus the accepted-update linearization is stable for frozen gains. During sustained rejection, the prediction matrix has eigenvalues $1$ and $d$, so it cannot correct a constant offset. This calculation is a local fixed-regime result. It does not prove stability for arbitrary switching, scale adaptation, circular discontinuities or missing-data queries, and it does not remove the reacquisition lag observed experimentally.
+
+\begin{thebibliography}{99}
+\setlength{\itemsep}{0pt}\setlength{\parsep}{0pt}\setlength{\parskip}{0pt}
+\bibitem[Chen et al., 2017]{chen} Chen, B., Liu, X., Zhao, H., \& Principe, J. C. (2017). Maximum correntropy Kalman filter. \textit{Automatica, 76}, 70--77. \url{https://doi.org/10.1016/j.automatica.2016.10.004}.
+\bibitem[Huber, 1964]{huber} Huber, P. J. (1964). Robust estimation of a location parameter. \textit{The Annals of Mathematical Statistics, 35}(1), 73--101. \url{https://doi.org/10.1214/aoms/1177703732}.
+\bibitem[Kalman, 1960]{kalman} Kalman, R. E. (1960). A new approach to linear filtering and prediction problems. \textit{Journal of Basic Engineering, 82}(1), 35--45. \url{https://doi.org/10.1115/1.3662552}.
+\bibitem[Li et al., 2026]{li} Li, Z., Yan, P., \& Hsu, L.-T. (2026). Logistic-aided Huber M-estimator for robust GNSS positioning. \textit{arXiv preprint}, arXiv:2603.19640. \url{https://doi.org/10.48550/arXiv.2603.19640}.
+\bibitem[Medina et al., 2021]{medina} Medina, D., Li, H., Vil\`a-Valls, J., \& Closas, P. (2021). Robust filtering techniques for RTK positioning in harsh propagation environments. \textit{Sensors, 21}(4), 1250. \url{https://doi.org/10.3390/s21041250}.
+\bibitem[MIND Technology, n.d.]{seamap} MIND Technology. (n.d.). BuoyLink RGPS tracking system. \url{https://mind-technology.com/seamap/buoylink-rgps-tracking-system/}. Accessed 10 November 2026.
+\bibitem[Ruckdeschel et al., 2014]{ruckdeschel} Ruckdeschel, P., Spangl, B., \& Pupashenko, D. (2014). Robust Kalman tracking and smoothing with propagating and non-propagating outliers. \textit{Statistical Papers, 55}, 93--123. \url{https://doi.org/10.1007/s00362-012-0496-4}.
+\bibitem[Tseng et al., 2017]{tseng} Tseng, C.-H., Lin, S.-F., \& Jwo, D.-J. (2017). Robust Huber-based cubature Kalman filter for GPS navigation processing. \textit{The Journal of Navigation, 70}(3), 527--546. \url{https://doi.org/10.1017/S0373463316000692}.
+\end{thebibliography}
+\end{document}

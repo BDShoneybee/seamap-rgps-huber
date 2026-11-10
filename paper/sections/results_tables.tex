@@ -1,0 +1,31 @@
+\begin{table}[htbp]\centering
+\caption{Mean scalar RMSE across independent runs.}\label{tab:sim}
+{\small\renewcommand{\baselinestretch}{1}\selectfont
+\begin{tabular}{lrrrrrr}\hline
+Method & Gaussian & Alt. & Outlier & Gaps & Combined & Maneuver\\\hline
+Raw/hold & 1.001 & 1.803 & 2.867 & 1.002 & 3.155 & 1.001\\
+Median-7 & 0.468 & 0.831 & 0.497 & 0.475 & 0.909 & 0.494\\
+CV-KF & 0.458 & 0.508 & 1.297 & 0.559 & 1.546 & 0.459\\
+Huber-KF & 0.457 & 0.498 & 0.597 & 0.557 & 0.836 & 0.458\\
+Trend & 0.366 & 0.581 & 0.372 & 0.381 & 0.642 & 0.396\\
+No-alternation & 0.401 & 0.571 & 0.408 & 0.417 & 0.680 & 0.415\\
+No-gate & 0.352 & 0.401 & 0.453 & 0.367 & 0.590 & 0.382\\
+\hline\end{tabular}}
+\par\small Normalized observation units; 60 runs per case. Confidence intervals and all individual outcomes are provided in the supplementary CSV tables. Alt. denotes the alternating-disturbance case.
+\end{table}
+\begin{table}[htbp]\centering
+\caption{Ship-data predictive disagreement and output roughness.}\label{tab:real}
+{\small\renewcommand{\baselinestretch}{1}\selectfont
+\begin{tabular}{lrrrr}\hline
+&\multicolumn{2}{c}{Range (m)}&\multicolumn{2}{c}{Bearing (rad)}\\
+Method & Next RMSE & Roughness & Next RMSE & Roughness\\\hline
+Raw/hold & 0.23330 & 0.09710 & 0.00545 & 0.00248\\
+Median-7 & 0.22875 & 0.00320 & 0.01084 & 0.00030\\
+CV-KF & 0.22646 & 0.02829 & 0.00539 & 0.00116\\
+Huber-KF & 0.22644 & 0.02828 & 0.00541 & 0.00116\\
+Trend & 0.22665 & 0.01111 & 0.01036 & 0.00081\\
+No-alternation & 0.22661 & 0.01215 & 0.00990 & 0.00082\\
+No-gate & 0.22041 & 0.01122 & 0.00863 & 0.00082\\
+\hline\end{tabular}}
+\par\small Next RMSE compares current output with the next adjacent observed epoch; roughness is the median absolute output increment. Neither is an independent truth error.
+\end{table}

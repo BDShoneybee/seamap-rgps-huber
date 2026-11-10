@@ -1,0 +1,18 @@
+{
+  "authored_pages": 34,
+  "blinded_pages": 34,
+  "figures": 9,
+  "no_overfull_boxes": true,
+  "no_undefined_references": true,
+  "blinded_identity_check": true,
+  "independent_bundle_exact_reproduction": [
+    "monte_carlo_trials.csv",
+    "simulation_summary.csv",
+    "archive_metrics.csv"
+  ],
+  "calibration_epoch_range": [
+    0,
+    299
+  ],
+  "evaluation_first_epoch": 300
+}

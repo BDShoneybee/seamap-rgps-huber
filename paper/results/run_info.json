@@ -1,0 +1,8 @@
+{
+  "elapsed_s": 90.74624180000137,
+  "log_events": 368,
+  "equation_checks": 9840,
+  "base_mc_seed": 81000,
+  "mc_runs_per_case": 60,
+  "calibration_epochs": 300
+}

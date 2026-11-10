@@ -1,0 +1,17 @@
+[
+  {
+    "seed": 81000,
+    "max_absolute_error": 2.842170943040401e-14,
+    "rejection_match": true
+  },
+  {
+    "seed": 81009,
+    "max_absolute_error": 1.4210854715202004e-14,
+    "rejection_match": true
+  },
+  {
+    "seed": 81059,
+    "max_absolute_error": 1.4210854715202004e-14,
+    "rejection_match": true
+  }
+]

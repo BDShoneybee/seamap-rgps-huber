@@ -1,0 +1,12 @@
+[
+  {
+    "file": "paper/data/bearing_archive.npz",
+    "bytes": 89374,
+    "sha256": "9a21f02354e2a15365d4a1ceed153c5d1b4d7255e7cea8745bb2924050826eea"
+  },
+  {
+    "file": "paper/data/range_archive.npz",
+    "bytes": 74460,
+    "sha256": "d524f6dbf704f34cabe9dad393af66ec0755e2acb572a93b1b31cf57d8074c04"
+  }
+]
